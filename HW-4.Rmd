@@ -1,6 +1,6 @@
 ---
 title: "MATH 216 Homework 4"
-author: "WRITE YOUR NAME HERE"
+author: "Brenda Li"
 output:
   html_document:
     toc: true
@@ -16,6 +16,21 @@ library(USAboundaries)
 library(maptools)
 library(sp)
 library(broom)
+library(rvest)
+library(stringr)
+library(rgdal)
+library(rgeos)
+
+#Census Data
+census <- read_csv(file="Employment.csv") 
+census<-select(census,SE_T001_001,SE_T002_002,Geo_FIPS,Geo_NAME) %>% 
+  rename(Pop=SE_T001_001,Pop_Density=SE_T002_002)
+
+#Getting counties shape data
+states_shp<-us_counties()
+states_data <- states_shp@data 
+states_polygon <- tidy(states_shp, region="geoid")
+
 ```
 
 
@@ -24,10 +39,10 @@ library(broom)
 
 Please indicate
 
-* Who you collaborated with:
-* Roughly how much time you spent on this HW so far:
-* The URL of the RPubs published URL [here](https://www.nhl.com/).
-* What gave you the most trouble:
+* Who you collaborated with: Bianca G, Shannia F,
+* Roughly how much time you spent on this HW so far: 6 hours
+* The URL of the RPubs published URL [here](http://rpubs.com/brendali121/HW4).
+* What gave you the most trouble: Figuring out how to get the data from the Amazon webpage the way I wanted.
 * Any comments you have:
 
 
@@ -41,26 +56,106 @@ shipping hub in the United States. Where should they build it?
 the color corresponds to the distance of the given area to the shipping hub,
 which is marked on the map with a large red dot.
 
+### Method 1: Amazon Fulfillment Centers
+
 ```{r, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=4.5}
-# Perform your computations here:
+#Getting a dataframe of the location of Amazon fulfilment centers
+url<-'https://trustfile.avalara.com/resources/amazon-warehouse-locations/'
+webpage<-read_html(url)
+amazon_table <- html_nodes(webpage, 'table')
+amazon<- html_table(amazon_table)
+fulfillment<-do.call("rbind",amazon)
+
+
+#Determining which county has the greatest number of fulfillment centers
+fulfillment %>% 
+  group_by(County) %>% 
+  summarise(n=n()) %>% 
+  arrange(desc(n)) %>% 
+  rename("Number of Fulfillment Centers"=n) %>% 
+  head()
+
+
+#Determining which of the counties with many fulfilment centers has the largest population
+amazon_census<-census %>% 
+  filter(str_detect(Geo_NAME,"Maricopa")|str_detect(Geo_NAME,"Boone")|
+           str_detect(Geo_NAME,"Bullitt")|
+           str_detect(Geo_NAME,"Cumberland")|
+           str_detect(Geo_NAME,"New Castle")|
+           str_detect(Geo_NAME,"Clarke"))
+
+census %>%
+  arrange(desc(Pop))
+
+
+#Coordinates for Phoenix, AZ
+plong<--112.0740
+plat<-33.4484
 
 ```
 
+In choosing where to place the shipping hub, I decided to look at the location of Amazon fulfillment centers so I could place the hub in a county with a high number of these centers since Amazon will have to rely on a shipping service in order to get their products out to customers (I'm operating under the assumption that Amazon doesn't have an exclusive contract with another shipping company already).  I found a webpage with tables of the location of fulfillment centers in each state, and downloaded them into R so that I could look at which counties had the most fulfillment centers.  Then, I used census data to look at the populations of the counties with the highest number of fulfilment centers, because I also wanted to place the shipping hub in  heavily populated area, which would have a high demand for shipping services. Thus, Maricopa County of Arizona turned out to be a county with a high number of Amazon fulfilment centers as well as a large population, so I chose to place the shipping hub there. The major city in Maricopa County is Phoenix, so that's where I placed the hub in order to capitalize also on the proximity to a major airport.
 
-```{r, eval=FALSE, echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=4.5}
-# Here is a template of a ggplot call; feel free to change this to suit your
-# needs. Once your computations above are complete, set the eval=TRUE on the
-# line above to tell R Markdown to run this code block.
-ggplot(data=geo_data, aes(x=long, y=lat, group=group, fill=distance)) +
-  # Plot choropleth polygons, low -> high being colored white -> dark green
+### Method 2: Center of Mass
+
+```{r, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=4.5}
+#Getting centroid data
+centroids <- coordinates(states_shp)
+
+  
+#Combining counties+centroid+census data
+combined<-cbind(states_data,centroids) %>% 
+  filter(!state_name %in% c("Alaska", "Hawaii", "Puerto Rico")) %>% 
+  mutate(fips=as.integer(geoid)) %>% 
+  left_join(census,by=c("fips"="Geo_FIPS")) 
+
+colnames(combined)[11] <- "x"
+colnames(combined)[12] <- "y"
+combined[2290,14]=1142234 #for Fairfax County Virginia
+
+
+#Calculating Center of Mass
+combined<- combined %>% 
+  mutate(xm=x*Pop) %>% 
+  mutate(ym=y*Pop)
+
+xcoord<-sum(combined$xm)/sum(combined$Pop)
+ycoord<-sum(combined$ym)/sum(combined$Pop)
+
+xcoord
+ycoord
+
+```
+
+### Plots
+```{r, eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=4.5}
+
+#Synthesizing States Data with Distances
+states <- left_join(states_polygon, states_data, by=c("id"="geoid")) %>% 
+  mutate(distance=sqrt((long-xcoord)^2+(lat-ycoord)^2)) %>%
+  mutate(amazon_dist=sqrt((long-plong)^2+(lat-plat)^2)) %>% 
+  filter(!state_name %in% c("Alaska", "Hawaii", "Puerto Rico"))
+
+
+#Plots
+amazon_plot<- ggplot(data=states, aes(x=long, y=lat, group=group, fill=amazon_dist)) +
   geom_polygon() +
   scale_fill_gradient(low="white", high="darkgreen") + 
-  # Trace outlines of areas
   geom_path(size=0.1) +
-  # Mark hub
-  annotate("point", x=hub_x_coord, y=hub_y_coord, col="red", size=5) +
-  # Correct aspect ratio for map
-  coord_map()
+  annotate("point", x=plong, y=plat, col="red", size=5) +
+  coord_map()+
+  labs(title="Choropleth Map with Center Found through Looking at Amazon Warehouses")
+amazon_plot
+
+centroid_plot<- ggplot(data=states, aes(x=long, y=lat, group=group, fill=distance)) +
+  geom_polygon() +
+  scale_fill_gradient(low="white", high="darkgreen") + 
+  geom_path(size=0.1) +
+  annotate("point", x=xcoord, y=ycoord, col="red", size=5) +
+  coord_map()+
+  labs(title="Choropleth Map with Center Found Using Center-of-Mass Method")
+centroid_plot
+
 ```
 
 
